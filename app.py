@@ -339,38 +339,80 @@ def login(sb, email, password) -> bool:
     sb.uc_open_with_reconnect(BASE_URL + "/auth/login", reconnect_time=8)
     time.sleep(4)
 
-    # 等待 Cloudflare 验证通过
-    print("⏳ 等待 Cloudflare 验证通过...")
-    cf_passed = False
+    # === 阶段 0: 处理 Cloudflare Challenge 页面 ("Just a moment...") ===
+    # HidenCloud 登录页可能先显示 Cloudflare 验证页面，需要先过这关
+    print("⏳ 检查 Cloudflare Challenge 页面...")
+    for i in range(3):
+        try:
+            page_src = sb.get_page_source() or ""
+            page_title = sb.get_title() or ""
+            # 检测 Cloudflare Challenge 页面
+            if 'Just a moment' in page_title or 'Just a moment' in page_src or 'challenge-platform' in page_src:
+                print(f"  🔍 检测到 Cloudflare Challenge 页面，尝试 uc_gui_click_captcha (第 {i+1} 次)...")
+                try:
+                    sb.uc_gui_click_captcha()
+                except Exception as e:
+                    print(f"  ⚠️ uc_gui_click_captcha 异常: {e}")
+                time.sleep(5)
+                # 检查是否通过
+                page_src = sb.get_page_source() or ""
+                page_title = sb.get_title() or ""
+                if 'Just a moment' not in page_title and 'Just a moment' not in page_src:
+                    print(f"  ✅ Cloudflare Challenge 已通过")
+                    break
+            else:
+                print(f"  ✅ 未检测到 Cloudflare Challenge 页面")
+                break
+        except Exception as e:
+            print(f"  ⚠️ 检查异常: {e}")
+        time.sleep(2)
+
+    # === 阶段 1: 等待登录表单或 Turnstile 出现 ===
+    print("⏳ 等待登录表单...")
+    form_found = False
     for i in range(30):
         try:
             page_src = sb.get_page_source() or ""
-            if 'Email or Username' in page_src or 'name="email"' in page_src.lower() or 'name="username"' in page_src.lower():
-                cf_passed = True
-                print(f"✅ Cloudflare 验证已通过（{i+1}s）")
+            if 'Email or Username' in page_src or 'name="email"' in page_src.lower() or 'name="username"' in page_src.lower() or 'input[type="email"]' in page_src:
+                form_found = True
+                print(f"✅ 登录表单已出现（{i+1}s）")
                 break
+            # 检查是否有 Turnstile
+            if sb.execute_script(_EXISTS_JS):
+                print(f"🔍 检测到 Turnstile（{i+1}s），先处理 Turnstile...")
+                if handle_turnstile(sb):
+                    print("✅ Turnstile 处理完成，继续等待表单...")
+                    time.sleep(2)
+                    continue
         except Exception:
             pass
         time.sleep(1)
-    if not cf_passed:
-        print("⚠️ Cloudflare 验证可能未通过，继续尝试...")
 
-    # 等待登录表单
-    try:
-        sb.wait_for_element('input[name="email"], input[name="username"]', timeout=15)
-    except Exception:
-        # 尝试处理 Turnstile
+    if not form_found:
+        print("⚠️ 登录表单未出现，尝试最后一次 Turnstile 处理...")
         if sb.execute_script(_EXISTS_JS):
-            print("🔍 检测到 Turnstile，尝试处理...")
             if not handle_turnstile(sb):
                 print("❌ Turnstile 验证失败")
                 sb.save_screenshot("login_turnstile_fail.png")
                 return False
         try:
-            sb.wait_for_element('input[name="email"], input[name="username"]', timeout=10)
+            sb.wait_for_element('input[name="email"], input[name="username"], input[type="email"]', timeout=10)
+            form_found = True
         except Exception:
             print("❌ 页面未加载出登录表单")
             sb.save_screenshot("login_no_form.png")
+            # 诊断页面状态
+            try:
+                page_title = sb.get_title() or ""
+                cur_url = sb.get_current_url()
+                print(f"  诊断: URL={cur_url}, Title={page_title}")
+                page_src = sb.get_page_source() or ""
+                if 'Just a moment' in page_src:
+                    print("  诊断: 页面仍是 Cloudflare Challenge")
+                if 'challenge' in page_src.lower():
+                    print("  诊断: 页面包含 challenge 关键词")
+            except Exception:
+                pass
             return False
 
     # 模拟人类行为
