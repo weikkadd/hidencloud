@@ -29,16 +29,22 @@ TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
 # ==========================================
 def send_tg(status_icon, status_text, details=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        print("⚠️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 通知")
         return
     text = f"☁️ HidenCloud 续期通知\n\n{status_icon} {status_text}\n{details}\n\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
     try:
-        requests.post(
+        print("📨 正在发送 Telegram 通知...")
+        resp = requests.post(
             f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
             json={"chat_id": TG_CHAT_ID, "text": text},
             timeout=10
         )
+        if resp.status_code == 200:
+            print("✅ Telegram 通知发送成功")
+        else:
+            print(f"❌ Telegram 通知发送失败: {resp.status_code} {resp.text}")
     except Exception as e:
-        print(f"⚠️ TG 通知发送失败: {e}")
+        print(f"❌ TG 通知发送异常: {e}")
 
 
 # ==========================================
