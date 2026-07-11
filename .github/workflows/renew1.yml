@@ -1,0 +1,70 @@
+name: HidenCloud 自动续期
+
+on:
+  schedule:
+    - cron: '0 10 */3 * *'  # 每 3 天 UTC 10:00 运行
+  workflow_dispatch:
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: 配置 Python 环境
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+
+    - name: 安装系统依赖和 Python 依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk jq
+        pip install seleniumbase requests
+        seleniumbase install chromedriver
+
+    - name: 设置代理 (sing-box, 支持所有协议)
+      continue-on-error: true
+      env:
+        NODE_LINK: ${{ secrets.PROXY_NODE }}
+      run: |
+        bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+
+    - name: 预清理残留 Chrome 进程
+      run: |
+        echo "=== 预清理 ==="
+        pkill -9 -f "chrome" 2>/dev/null || true
+        pkill -9 -f "chromedriver" 2>/dev/null || true
+        rm -rf /tmp/chrome_user_data 2>/dev/null || true
+        sleep 2
+
+    - name: 运行续期脚本
+      env:
+        USERS_JSON: ${{ secrets.USERS_JSON }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      run: |
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python3 app.py
+
+    - name: 上传截图
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-screenshots
+        path: |
+          *.png
+        if-no-files-found: ignore
+
+    - name: 清理历史
+      if: always()
+      uses: Mattraks/delete-workflow-runs@v2
+      with:
+        token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        delete_workflow_pattern: ${{ github.workflow }}
+        retain_days: 0
+        keep_minimum_runs: 2
