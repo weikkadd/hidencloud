@@ -510,134 +510,149 @@ def login(sb, email, password) -> bool:
 
 
 # ==========================================
-# 续期逻辑 (通过浏览器 fetch 调用 API)
+# 续期逻辑 (通过浏览器直接访问页面 + 解析 HTML)
 # ==========================================
 def renew_via_browser(sb, email):
-    """登录后通过浏览器 fetch 调用 HidenCloud API 完成续期"""
+    """登录后通过浏览器直接访问页面 + 解析 HTML 完成续期"""
     print("\n" + "#" * 50)
     print("  开始续期流程")
     print("#" * 50)
 
-    # 验证登录状态
-    print("🔍 验证 API 登录状态...")
+    # 等待页面稳定
+    time.sleep(3)
+
+    # === 步骤 1: 访问 dashboard，获取服务列表 + CSRF Token ===
+    print("🔍 访问 Dashboard 获取服务列表...")
     try:
-        result = sb.execute_script("""
-            (async function() {
-                try {
-                    const res = await fetch('/dashboard', { redirect: 'follow' });
-                    const text = await res.text();
-                    return { status: res.status, url: res.url, data: text };
-                } catch(e) { return { error: e.message }; }
-            })()
-        """)
-        if not result or result.get('error'):
-            print(f"❌ API 请求失败: {result.get('error') if result else '无响应'}")
-            return False
-
-        if '/login' in result.get('url', '') or '/auth' in result.get('url', ''):
-            print("❌ 浏览器未保持登录状态")
-            return False
-
-        html = result.get('data', '')
-        if 'Just a moment' in html or 'Attention Required' in html:
-            print("⚠️ 检测到 Cloudflare 拦截页面")
-            return False
-
-        # 提取 CSRF Token
-        import re
-        csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', html)
-        csrf_token = csrf_match.group(1) if csrf_match else ''
-        if csrf_token:
-            print(f"✅ 获取 CSRF Token: {csrf_token[:20]}...")
-
-        # 解析服务列表
-        services = []
-        for match in re.finditer(r'/service/(\d+)/manage', html):
-            svc_id = match.group(1)
-            if svc_id not in [s['id'] for s in services]:
-                services.append({'id': svc_id, 'url': f'/service/{svc_id}/manage'})
-
-        print(f"✅ 发现 {len(services)} 个服务")
-        if not services:
-            print("⚠️ 未发现服务，可能没有可续期的服务器")
-            return True  # 不算失败
-
+        sb.open(BASE_URL + "/dashboard")
+        time.sleep(3)
     except Exception as e:
-        print(f"❌ 初始化异常: {e}")
+        print(f"❌ 访问 dashboard 失败: {e}")
         return False
 
-    # 处理每个服务
+    try:
+        html = sb.get_page_source() or ""
+    except Exception as e:
+        print(f"❌ 获取页面源码失败: {e}")
+        return False
+
+    if not html:
+        print("❌ 页面源码为空")
+        return False
+
+    cur_url = sb.get_current_url()
+    if '/login' in cur_url or '/auth' in cur_url:
+        print(f"❌ 被重定向到登录页: {cur_url}")
+        return False
+
+    if 'Just a moment' in html or 'Attention Required' in html:
+        print("⚠️ 检测到 Cloudflare 拦截页面")
+        return False
+
+    print(f"✅ Dashboard 访问成功 (URL: {cur_url})")
+
+    # 提取 CSRF Token
+    csrf_match = re.search(r'<meta name="csrf-token" content="([^"]+)"', html)
+    csrf_token = csrf_match.group(1) if csrf_match else ''
+    if csrf_token:
+        print(f"✅ 获取 CSRF Token: {csrf_token[:20]}...")
+
+    # 解析服务列表
+    services = []
+    for match in re.finditer(r'/service/(\d+)/manage', html):
+        svc_id = match.group(1)
+        if svc_id not in [s['id'] for s in services]:
+            services.append({'id': svc_id, 'url': f'/service/{svc_id}/manage'})
+
+    print(f"✅ 发现 {len(services)} 个服务")
+    if not services:
+        print("⚠️ 未发现服务，可能没有可续期的服务器")
+        send_tg("ℹ️", "无服务", f"账号: {email[:4]}****\n未发现可续期服务")
+        return True  # 不算失败
+
+    # === 步骤 2: 处理每个服务 ===
     success_count = 0
     for svc in services:
         print(f"\n>>> 处理服务 ID: {svc['id']}")
         time.sleep(2 + random.random() * 2)
 
         try:
-            # 获取 manage 页面 + form token
-            manage_result = sb.execute_script(f"""
-                (async function() {{
-                    try {{
-                        const res = await fetch('/service/{svc['id']}/manage', {{ redirect: 'follow' }});
-                        const text = await res.text();
-                        return {{ status: res.status, data: text }};
-                    }} catch(e) {{ return {{ error: e.message }}; }}
-                }})()
-            """)
+            # 访问服务管理页
+            print(f"  📄 访问服务管理页: /service/{svc['id']}/manage")
+            sb.open(BASE_URL + f"/service/{svc['id']}/manage")
+            time.sleep(3)
 
-            if not manage_result or manage_result.get('error'):
-                print(f"  ❌ 获取服务页面失败: {manage_result.get('error') if manage_result else '无响应'}")
-                continue
-
-            manage_html = manage_result.get('data', '')
+            manage_html = sb.get_page_source() or ""
             token_match = re.search(r'<input[^>]*name="_token"[^>]*value="([^"]+)"', manage_html)
             form_token = token_match.group(1) if token_match else ''
-            if not form_token:
+            if form_token:
+                print(f"  ✅ 获取 form token: {form_token[:20]}...")
+            else:
                 print(f"  ⚠️ 未找到 _token，尝试继续...")
 
-            # 提交续期
+            # 提交续期 — 用 JS 发 POST 请求 (同步方式)
             print(f"  📅 提交续期 ({RENEW_DAYS}天)...")
             time.sleep(1 + random.random())
 
-            renew_result = sb.execute_script(f"""
-                (async function() {{
-                    try {{
-                        const params = new URLSearchParams();
-                        params.append('_token', '{form_token}');
-                        params.append('days', '{RENEW_DAYS}');
-                        const res = await fetch('/service/{svc['id']}/renew', {{
-                            method: 'POST',
-                            headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-                            body: params.toString(),
-                            redirect: 'follow'
-                        }});
-                        const text = await res.text();
-                        return {{ status: res.status, url: res.url, data: text }};
-                    }} catch(e) {{ return {{ error: e.message }}; }}
-                }})()
-            """)
+            # 用 XMLHttpRequest 同步请求 (更可靠)
+            renew_js = """
+                (function() {
+                    var params = '_token=' + encodeURIComponent('""" + form_token + """') + '&days=' + """ + str(RENEW_DAYS) + """;
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('POST', '/service/""" + svc['id'] + """/renew', false);
+                    xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                    try {
+                        xhr.send(params);
+                        return { status: xhr.status, responseURL: xhr.responseURL, responseText: xhr.responseText.substring(0, 5000) };
+                    } catch(e) {
+                        return { error: e.message };
+                    }
+                })()
+            """
+            renew_result = sb.execute_script(renew_js)
 
             if not renew_result or renew_result.get('error'):
                 print(f"  ❌ 续期请求失败: {renew_result.get('error') if renew_result else '无响应'}")
                 continue
 
-            final_url = renew_result.get('url', '')
-            renew_html = renew_result.get('data', '')
+            final_url = renew_result.get('responseURL', '')
+            renew_html = renew_result.get('responseText', '')
+            renew_status = renew_result.get('status', 0)
 
-            if '/invoice/' in final_url:
+            print(f"  📊 续期响应: status={renew_status}, url={final_url[:80]}")
+
+            if '/invoice/' in final_url or '/invoice/' in renew_html:
                 print(f"  ⚡️ 续期成功，前往支付")
-                if pay_invoice(sb, renew_html, final_url, csrf_token):
+                if pay_invoice(sb, renew_html, final_url, csrf_token, form_token):
                     success_count += 1
                     print(f"  ✅ 服务 {svc['id']} 续期+支付完成")
                 else:
                     print(f"  ⚠️ 续期成功但支付失败")
                     success_count += 1  # 续期本身成功了
+            elif renew_status == 200:
+                # 检查响应内容
+                if 'invoice' in renew_html.lower() or 'renew' in renew_html.lower():
+                    print(f"  ⚠️ 续期响应 200，检查账单...")
+                    if check_and_pay_invoices(sb, svc['id'], csrf_token, form_token):
+                        success_count += 1
+                else:
+                    print(f"  ⚠️ 续期响应 200，但未跳转账单")
+                    # 尝试检查账单
+                    if check_and_pay_invoices(sb, svc['id'], csrf_token, form_token):
+                        success_count += 1
             else:
-                print(f"  ⚠️ 续期后未跳转账单，检查未支付账单...")
-                if check_and_pay_invoices(sb, svc['id'], csrf_token):
+                print(f"  ⚠️ 续期响应异常: {renew_status}")
+                # 尝试检查账单
+                if check_and_pay_invoices(sb, svc['id'], csrf_token, form_token):
                     success_count += 1
 
         except Exception as e:
             print(f"  ❌ 处理服务异常: {e}")
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
 
     print(f"\n📊 续期结果: {success_count}/{len(services)} 个服务成功")
     if success_count > 0:
@@ -647,48 +662,57 @@ def renew_via_browser(sb, email):
     return success_count > 0
 
 
-def pay_invoice(sb, html, current_url, csrf_token):
+def pay_invoice(sb, html, current_url, csrf_token, form_token):
     """从 HTML 提取支付表单并提交"""
     try:
         # 找支付表单
         forms = re.findall(r'<form[^>]*action="([^"]+)"[^>]*>(.*?)</form>', html, re.DOTALL)
         target_action = None
-        target_inputs = []
         for action, form_html in forms:
             if 'pay' in form_html.lower() and 'balance/add' not in action:
                 target_action = action
-                # 提取所有 input
-                target_inputs = re.findall(r'<input[^>]*name="([^"]+)"[^>]*(?:value="([^"]*)")?', form_html)
                 break
 
         if not target_action:
             print("  ⚪ 页面未找到支付表单 (可能已支付)")
             return True
 
-        # 构造支付参数
-        params = []
-        for name, value in target_inputs:
-            params.append(f"{name}={value or ''}")
-        params_str = "&".join(params)
-
+        # 用 JS 提取表单所有 input 并提交
+        pay_js = """
+            (function() {
+                var forms = document.querySelectorAll('form');
+                for (var i = 0; i < forms.length; i++) {
+                    var btnText = (forms[i].querySelector('button') || {}).textContent || '';
+                    var action = forms[i].getAttribute('action') || '';
+                    if (btnText.toLowerCase().includes('pay') && !action.includes('balance/add')) {
+                        var params = new URLSearchParams();
+                        var inputs = forms[i].querySelectorAll('input');
+                        for (var j = 0; j < inputs.length; j++) {
+                            var name = inputs[j].getAttribute('name');
+                            var value = inputs[j].value || '';
+                            if (name) params.append(name, value);
+                        }
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('POST', action, false);
+                        xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                        try {
+                            xhr.send(params.toString());
+                            return { status: xhr.status, responseURL: xhr.responseURL };
+                        } catch(e) { return { error: e.message }; }
+                    }
+                }
+                return { error: 'no pay form' };
+            })()
+        """
         print("  💳 提交支付...")
-        pay_result = sb.execute_script(f"""
-            (async function() {{
-                try {{
-                    const res = await fetch('{target_action}', {{
-                        method: 'POST',
-                        headers: {{ 'Content-Type': 'application/x-www-form-urlencoded' }},
-                        body: "{params_str.replace('"', '\\"')}",
-                        redirect: 'follow'
-                    }});
-                    return {{ status: res.status, url: res.url }};
-                }} catch(e) {{ return {{ error: e.message }}; }}
-            }})()
-        """)
+        pay_result = sb.execute_script(pay_js)
 
         if pay_result and pay_result.get('status') == 200:
             print("  ✅ 支付成功！")
             return True
+        elif pay_result and pay_result.get('error'):
+            print(f"  ❌ 支付失败: {pay_result.get('error')}")
+            return False
         else:
             print(f"  ⚠️ 支付响应: {pay_result.get('status') if pay_result else '无响应'}")
             return False
@@ -697,43 +721,29 @@ def pay_invoice(sb, html, current_url, csrf_token):
         return False
 
 
-def check_and_pay_invoices(sb, service_id, csrf_token):
+def check_and_pay_invoices(sb, service_id, csrf_token, form_token):
     """检查并支付未付账单"""
     try:
-        result = sb.execute_script(f"""
-            (async function() {{
-                try {{
-                    const res = await fetch('/service/{service_id}/invoices?where=unpaid', {{ redirect: 'follow' }});
-                    const text = await res.text();
-                    return {{ status: res.status, data: text }};
-                }} catch(e) {{ return {{ error: e.message }}; }}
-            }})()
-        """)
+        print(f"  📄 检查未支付账单: /service/{service_id}/invoices?where=unpaid")
+        sb.open(BASE_URL + f"/service/{service_id}/invoices?where=unpaid")
+        time.sleep(3)
 
-        if not result or result.get('error'):
-            return False
-
-        html = result.get('data', '')
-        invoice_urls = list(set(re.findall(r'/invoice/\d+', html)))
+        html = sb.get_page_source() or ""
+        invoice_urls = list(set(re.findall(r'/invoice/(\d+)', html)))
 
         if not invoice_urls:
             print("  ✅ 无未支付账单")
             return True
 
-        for url in invoice_urls:
-            full_url = url if url.startswith('http') else f"{BASE_URL}{url}"
-            print(f"  📄 处理账单: {url}")
-            inv_result = sb.execute_script(f"""
-                (async function() {{
-                    try {{
-                        const res = await fetch('{url}', {{ redirect: 'follow' }});
-                        const text = await res.text();
-                        return {{ status: res.status, url: res.url, data: text }};
-                    }} catch(e) {{ return {{ error: e.message }}; }}
-                }})()
-            """)
-            if inv_result and inv_result.get('data'):
-                pay_invoice(sb, inv_result['data'], inv_result.get('url', ''), csrf_token)
+        print(f"  📋 发现 {len(invoice_urls)} 个未支付账单")
+
+        for inv_id in invoice_urls:
+            print(f"  📄 处理账单: /invoice/{inv_id}")
+            sb.open(BASE_URL + f"/invoice/{inv_id}")
+            time.sleep(3)
+
+            inv_html = sb.get_page_source() or ""
+            pay_invoice(sb, inv_html, f"/invoice/{inv_id}", csrf_token, form_token)
             time.sleep(3 + random.random() * 2)
 
         return True
