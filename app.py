@@ -31,7 +31,15 @@ def send_tg(status_icon, status_text, details=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("⚠️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 通知")
         return
-    text = f"☁️ HidenCloud 续期通知\n\n{status_icon} {status_text}\n{details}\n\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n🌐 {BASE_URL}"
+    # 统一简洁格式 (参考 Godlike): ✓/✗ + key: value, 不要 emoji 装饰
+    # 把 status_icon (☁️/✅/❌/⚠️) 转成简洁的 ✓/✗/!
+    simple_icon = "✓"
+    if "❌" in status_icon or "失败" in status_text:
+        simple_icon = "✗"
+    elif "⚠️" in status_icon or "未到" in status_text or "跳过" in status_text:
+        simple_icon = "!"
+
+    text = f"{simple_icon} {status_text}\n{details}\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\nHidenCloud Auto Renew"
     try:
         print("📨 正在发送 Telegram 通知...")
         resp = requests.post(
