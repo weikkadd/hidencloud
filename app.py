@@ -31,7 +31,7 @@ def send_tg(status_icon, status_text, details=""):
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         print("⚠️ 未配置 TG_BOT_TOKEN 或 TG_CHAT_ID，跳过 Telegram 通知")
         return
-    text = f"☁️ HidenCloud 续期通知\n\n{status_icon} {status_text}\n{details}\n\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    text = f"☁️ HidenCloud 续期通知\n\n{status_icon} {status_text}\n{details}\n\n时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n🌐 {BASE_URL}"
     try:
         print("📨 正在发送 Telegram 通知...")
         resp = requests.post(
